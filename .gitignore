@@ -18,3 +18,7 @@ ChangeLog
 doc/source/api
 .*.sw?
 AUTHORS
+
+# 本地虚拟环境与密钥
+.venv/
+.env
