@@ -1,0 +1,5 @@
+来源仓库：https://github.com/PyCQA/bandit
+冻结 commit：2d5467c45c3189f4d7d07e8022276bc73a478abd
+许可证：Apache-2.0
+导入日期：2026-11-12
+说明：本目录为评测底座，已剥离上游 git 历史，仅保留代码快照。
