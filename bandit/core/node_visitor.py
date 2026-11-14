@@ -7,6 +7,7 @@ import logging
 import operator
 
 from bandit.core import constants
+from bandit.core import taint as b_taint
 from bandit.core import tester as b_tester
 from bandit.core import utils as b_utils
 
@@ -15,7 +16,15 @@ LOG = logging.getLogger(__name__)
 
 class BanditNodeVisitor:
     def __init__(
-        self, fname, fdata, metaast, testset, debug, nosec_lines, metrics
+        self,
+        fname,
+        fdata,
+        metaast,
+        testset,
+        debug,
+        nosec_lines,
+        metrics,
+        config=None,
     ):
         self.debug = debug
         self.nosec_lines = nosec_lines
@@ -33,6 +42,13 @@ class BanditNodeVisitor:
         self.tester = b_tester.BanditTester(
             self.testset, self.debug, nosec_lines, metrics
         )
+        # Intra-procedural taint analysis results for the current module.
+        # Built once per file in process(), before any plugin runs.
+        self.taint = None
+        taint_config = None
+        if config is not None:
+            taint_config = config.get_option("taint_analysis")
+        self.taint_config = b_taint.TaintConfig(taint_config)
 
         # in some cases we can't determine a qualified name
         try:
@@ -190,6 +206,7 @@ class BanditNodeVisitor:
         self.context = {}
         self.context["imports"] = self.imports
         self.context["import_aliases"] = self.import_aliases
+        self.context["taint"] = self.taint
 
         if self.debug:
             LOG.debug(ast.dump(node))
@@ -283,6 +300,13 @@ class BanditNodeVisitor:
         :return score: the aggregated score for the current file
         """
         f_ast = ast.parse(data)
+        # Build whole-module intra-procedural taint results before plugins
+        # run, so every plugin context can query data-flow based state.
+        try:
+            self.taint = b_taint.TaintAnalysis(f_ast, self.taint_config)
+        except Exception as e:  # pragma: no cover - defensive guard
+            LOG.warning("Taint analysis disabled for %s: %s", self.fname, e)
+            self.taint = None
         self.generic_visit(f_ast)
         # Run tests that do not require access to the AST,
         # but only to the whole file source:

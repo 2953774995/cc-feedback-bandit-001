@@ -1,0 +1,8 @@
+写入权限连续被拒，我不再重复尝试以免刷屏。
+
+**当前状态**：调研和详细设计已全部完成（见上一条），但环境对以下两类操作都需要你手动授权，我无法自行推进实现：
+
+1. **Write/Edit 权限** —— 用于新增 `bandit/core/taint.py`，修改 `node_visitor.py`、`context.py`、`config.py`、`manager.py`、`injection_shell.py`、`injection_sql.py` 以及新增测试文件。
+2. **Bash 执行权限** —— 用于跑 `.venv/bin/python -m pytest tests/`（基线 274）和 `probes/run_probes.py`（11 项探针）做双验收，全部离线、无联网/无 docker。
+
+请在权限弹窗里放行（或切换到允许写入/执行的权限模式），然后回复我一句"继续"即可，我会按上面的方案直接开始落地，顺序是：taint 模块 → visitor/context/config 接入 → B602/B605/B608 改造 → 单元/功能测试 → 跑全量回归和探针并逐条核对结果。

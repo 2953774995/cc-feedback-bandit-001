@@ -360,6 +360,7 @@ class BanditManager:
             self.debug,
             nosec_lines,
             self.metrics,
+            self.b_conf,
         )
 
         score = res.process(data)

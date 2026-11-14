@@ -1,0 +1,22 @@
+全部完成。最终状态汇总：
+
+## 实现总览
+
+### 新增模块：`bandit/core/taint.py`
+过程内污点分析引擎，在插件运行前对整个模块 AST 建一次分析结果，核心设计：
+
+- **三态模型** `TaintState`：`tainted`（带污点及来源）/ `CLEAN`（可证常量派生）/ `None`（来源不可解析，保守回退旧逻辑）
+- **可配置 source/sanitizer/validator**（YAML `taint_analysis:` 键，fnmatch 模式），默认覆盖 Flask `request` 链、Django `HttpRequest`、`sys.argv`、`input()`、`shlex.quote`、`allow/validate/sanitize*`
+- **传播**：多跳赋值、list/tuple/set/dict 及下标、对象属性、`+`/`%`/`format`/f-string、比较/布尔/条件表达式、推导式、函数参数→本地函数返回值摘要（支持前向引用、递归守卫）；if/for/while/try/with 分支做保守的路径合并
+- **净化**：sanitizer/validator 包裹即清除；常量重新赋值覆盖；`execute(sql, params)` 参数化查询识别（含 kwargs/executemany）
+- 关键区分：`propagate_states`（表达式，未知操作数保持 None）vs `merge_states`（控制流汇合），保证「追不到来源绝不误判为干净」
+
+### 框架接入
+- `node_visitor.py`：`process()` 里先建 `TaintAnalysis`，每个 context 挂 `taint`；`manager.py` 透传 BanditConfig；`context.py` 暴露 `is_tainted()` 等查询
+- **不动 stevedore entry points**（editable 安装下入口在安装时固化）：B608 用同一函数 `@test.checks("Str", "Call")` 双挂载接管 execute sink；B602/B605 内部用污点判定替代 `_evaluate_shell_call` 的字面量判断
+- 污点确认的 issue 文本带 "confirmed by intra-procedural taint analysis"，与旧启发式 issue 可区分
+
+### 验收结果（`./test.sh`）
+- 探针 **11/11 通过**：6 个漏报样本全部报出（B608/B602/B605，HIGH/MEDIUM），5 个安全样本无 HIGH（参数化查询零 issue）
+- 全量回归 **319 passed**（基线 274 + 新增 45：26 个 taint 单元测试、19 个端到端测试），含配置化 source/sanitizer、分支合并、递归、内联净化、未知函数保守回退等非 happy-path
+- 零新依赖、纯 Python 离线；新增代码全部符合 79 列行长（仅存的长行是仓库原有 docstring URL）

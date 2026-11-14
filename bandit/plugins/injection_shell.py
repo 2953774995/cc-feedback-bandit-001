@@ -25,6 +25,87 @@ def _evaluate_shell_call(context):
         return bandit.HIGH
 
 
+# Expression node types that build/compute strings.  A command made of such
+# operations keeps bandit's traditional "computed string" HIGH heuristic even
+# when all operands are constants; taint analysis only downgrades simple
+# constant aliases (plain names/literals).
+_STRING_BUILDING_NODES = (
+    ast.BinOp,
+    ast.JoinedStr,
+    ast.FormattedValue,
+)
+
+
+def _is_safe_static_argument(node, analysis):
+    """True when a CLEAN argument is safe to downgrade.
+
+    Plain constants/aliases are always safe.  Calls are allowed only when
+    they resolve to configured sanitizers/validators, so that inline usage
+    such as ``subprocess.run(shlex.quote(x), shell=True)`` is recognized
+    while arbitrary computed strings keep the legacy HIGH heuristic.
+    """
+    config = analysis.config
+    for child in ast.walk(node):
+        if isinstance(child, _STRING_BUILDING_NODES):
+            return False
+        if isinstance(child, ast.Call):
+            qualname = analysis.callee_qualname(child)
+            basename = analysis.callee_basename(child)
+            if not (
+                config.is_sanitizer(qualname, basename)
+                or config.is_validator(qualname, basename)
+            ):
+                return False
+    return True
+
+
+def _has_definite_shell_true(call_node):
+    """True only for an explicit boolean ``shell=True`` keyword."""
+    for keyword in getattr(call_node, "keywords", []):
+        if keyword.arg == "shell":
+            return (
+                isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+            )
+    return False
+
+
+def _evaluate_shell_call_taint(context, shell_keyword_required):
+    """Evaluate the first shell argument with taint analysis.
+
+    Returns a ``(severity, taint_confirmed)`` tuple.  When the intra
+    procedural analysis can classify the argument, the verdict is based on
+    real data flow: tainted data reaching the shell is HIGH, data provably
+    derived from constants (or run through a configured sanitizer/validator)
+    is LOW.  The LOW downgrade is deliberately narrow - a plain constant
+    alias and, for subprocess wrappers, an explicit boolean ``shell=True`` -
+    so that bandit's traditional heuristics for computed strings and
+    non-canonical shell arguments stay in force.  If the origin cannot be
+    resolved, the literal based heuristic is kept so conservative behavior
+    is preserved.
+
+    :param shell_keyword_required: True for subprocess style wrappers whose
+        shell behavior is opt-in via ``shell=True``; False for functions
+        (e.g. ``os.system``) that always invoke a shell.
+    """
+    analysis = context.taint
+    if analysis is not None and context.node.args:
+        arg = context.node.args[0]
+        state = analysis.get_state(arg)
+        if state is not None:
+            if state.tainted:
+                return bandit.HIGH, True
+            canonical_shell = (
+                not shell_keyword_required
+                or _has_definite_shell_true(context.node)
+            )
+            if canonical_shell and _is_safe_static_argument(
+                arg, analysis
+            ):
+                return bandit.LOW, False
+    return _evaluate_shell_call(context), False
+
+
 def gen_config(name):
     if name == "shell_injection":
         return {
@@ -209,7 +290,9 @@ def subprocess_popen_with_shell_equals_true(context, config):
     if config and context.call_function_name_qual in config["subprocess"]:
         if has_shell(context):
             if len(context.call_args) > 0:
-                sev = _evaluate_shell_call(context)
+                sev, taint_confirmed = _evaluate_shell_call_taint(
+                    context, shell_keyword_required=True
+                )
                 if sev == bandit.LOW:
                     return bandit.Issue(
                         severity=bandit.LOW,
@@ -221,12 +304,23 @@ def subprocess_popen_with_shell_equals_true(context, config):
                         lineno=context.get_lineno_for_call_arg("shell"),
                     )
                 else:
+                    if taint_confirmed:
+                        text = (
+                            "subprocess call with shell=True identified, "
+                            "tainted input reaches the shell (confirmed by "
+                            "intra-procedural taint analysis), security "
+                            "issue."
+                        )
+                    else:
+                        text = (
+                            "subprocess call with shell=True identified, "
+                            "security issue."
+                        )
                     return bandit.Issue(
                         severity=bandit.HIGH,
                         confidence=bandit.HIGH,
                         cwe=issue.Cwe.OS_COMMAND_INJECTION,
-                        text="subprocess call with shell=True identified, "
-                        "security issue.",
+                        text=text,
                         lineno=context.get_lineno_for_call_arg("shell"),
                     )
 
@@ -485,7 +579,9 @@ def start_process_with_a_shell(context, config):
     """  # noqa: E501
     if config and context.call_function_name_qual in config["shell"]:
         if len(context.call_args) > 0:
-            sev = _evaluate_shell_call(context)
+            sev, taint_confirmed = _evaluate_shell_call_taint(
+                context, shell_keyword_required=False
+            )
             if sev == bandit.LOW:
                 return bandit.Issue(
                     severity=bandit.LOW,
@@ -496,12 +592,22 @@ def start_process_with_a_shell(context, config):
                     "consider rewriting without shell",
                 )
             else:
+                if taint_confirmed:
+                    text = (
+                        "Starting a process with a shell, tainted input "
+                        "reaches the shell (confirmed by intra-procedural "
+                        "taint analysis), security issue."
+                    )
+                else:
+                    text = (
+                        "Starting a process with a shell, possible injection"
+                        " detected, security issue."
+                    )
                 return bandit.Issue(
                     severity=bandit.HIGH,
                     confidence=bandit.HIGH,
                     cwe=issue.Cwe.OS_COMMAND_INJECTION,
-                    text="Starting a process with a shell, possible injection"
-                    " detected, security issue.",
+                    text=text,
                 )
 
 

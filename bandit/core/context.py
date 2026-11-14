@@ -314,3 +314,46 @@ class Context:
     @property
     def import_aliases(self):
         return self._context.get("import_aliases")
+
+    @property
+    def taint(self):
+        """Intra-procedural taint analysis results for the current module.
+
+        :return: a bandit.core.taint.TaintAnalysis instance, or None if the
+                 analysis could not be built for the file.
+        """
+        return self._context.get("taint")
+
+    def taint_state(self, node=None):
+        """Return the TaintState of an expression node.
+
+        :param node: AST node to query; defaults to the context's node
+        :return: TaintState, or None when no analysis result is available
+        """
+        analysis = self.taint
+        if analysis is None:
+            return None
+        return analysis.get_state(node if node is not None else self.node)
+
+    def is_tainted(self, node=None):
+        """True when taint analysis proves the node carries untrusted data."""
+        analysis = self.taint
+        if analysis is None:
+            return False
+        return analysis.is_tainted(node if node is not None else self.node)
+
+    def is_taint_clean(self, node=None):
+        """True when the node is provably derived from constants only."""
+        analysis = self.taint
+        if analysis is None:
+            return False
+        return analysis.is_clean(node if node is not None else self.node)
+
+    def is_parameterized_execute(self, node=None):
+        """True for execute()/executemany() calls passing bound parameters."""
+        analysis = self.taint
+        if analysis is None:
+            return False
+        return analysis.is_parameterized_execute(
+            node if node is not None else self.node
+        )

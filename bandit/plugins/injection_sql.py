@@ -125,9 +125,62 @@ def _evaluate_ast(node):
         return (False, statement, str_replace)
 
 
-@test.checks("Str")
+def _contains_sql_literal(node):
+    """True when node contains a string literal matching the SQL heuristic.
+
+    Such cases are already covered by the string-based B608 check, which
+    allows the taint based call check to avoid duplicate reporting.
+    """
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Constant)
+            and isinstance(child.value, str)
+            and _check_string(child.value)
+        ):
+            return True
+    return False
+
+
+def _tainted_sql_call(context):
+    """Taint based check for execute()/executemany() sink calls.
+
+    Returns an Issue when tainted data is proven to reach the query argument
+    of a database execute call. Parameterized queries (query text with bound
+    parameters passed separately) and queries provably built from constants
+    are not flagged.
+    """
+    analysis = context.taint
+    if analysis is None or not isinstance(context.node, ast.Call):
+        return None
+    call = context.node
+    if utils.get_called_name(call) not in ("execute", "executemany"):
+        return None
+    if not call.args:
+        return None
+    # Parameterized query: values are passed as bound parameters, so the
+    # query text itself is not an injection vector.
+    if analysis.is_parameterized_execute(call):
+        return None
+    query_state = analysis.get_state(call.args[0])
+    if query_state is None or not query_state.tainted:
+        return None
+    # The literal-based check already reports SQL-looking string building.
+    if _contains_sql_literal(call.args[0]):
+        return None
+    return bandit.Issue(
+        severity=bandit.MEDIUM,
+        confidence=bandit.HIGH,
+        cwe=issue.Cwe.SQL_INJECTION,
+        text="SQL injection vector confirmed by intra-procedural taint "
+        "analysis: tainted data reaches the execute() query argument.",
+    )
+
+
+@test.checks("Str", "Call")
 @test.test_id("B608")
 def hardcoded_sql_expressions(context):
+    if isinstance(context.node, ast.Call):
+        return _tainted_sql_call(context)
     execute_call, statement, str_replace = _evaluate_ast(context.node)
     if _check_string(statement):
         return bandit.Issue(
